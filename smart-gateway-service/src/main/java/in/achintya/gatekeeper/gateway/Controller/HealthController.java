@@ -16,14 +16,14 @@ public class HealthController {
     private String serviceDescription;
 
     public HealthController(@Value("${info.app.name}") String serviceName,
-                            @Value("${info.app.description}") String serviceDescription){
-        this.serviceDescription = serviceDescription;
+                            @Value("${info.app.description}") String serviceDescription) {
         this.serviceName = serviceName;
+        this.serviceDescription = serviceDescription;
     }
 
     @GetMapping
-    public ResponseEntity<HealthResponse> health(){
-        return ResponseEntity.ok(new HealthResponse(serviceName,serviceDescription,"UP"));
+    public ResponseEntity<HealthResponse> health() {
+        return ResponseEntity.ok(
+                new HealthResponse(serviceName, serviceDescription, "UP"));
     }
-
 }

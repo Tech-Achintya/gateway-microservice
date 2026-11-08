@@ -3,7 +3,9 @@ package in.achintya.gatekeeper.gateway.Service;
 import in.achintya.gatekeeper.gateway.Model.CompiledRoute;
 import in.achintya.gatekeeper.gateway.DTO.GatewayRoute;
 import in.achintya.gatekeeper.gateway.DTO.ResponseDTO.GatewayErrorResponse;
+import in.achintya.gatekeeper.gateway.Model.RateLimitResult;
 import jakarta.servlet.http.HttpServletRequest;
+import org.apache.kafka.common.metrics.stats.Rate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -22,20 +24,25 @@ public class GatewayService {
 
     private final RouteRegistry routeRegistry;
     private final ObjectMapper objectMapper;
-    public GatewayService(RouteRegistry routeRegistry, ObjectMapper objectMapper){
+    private final RateLimitService rateLimitService;
+    public GatewayService(RouteRegistry routeRegistry, ObjectMapper objectMapper, RateLimitService rateLimitService){
         this.routeRegistry = routeRegistry;
         this.objectMapper = objectMapper;
+        this.rateLimitService = rateLimitService;
     }
 
     public ResponseEntity<byte[]> handle(HttpServletRequest request){
         long start = System.nanoTime();
 
+
+
         String coorelationId = getCorrelationId(request);
 
-        Optional<CompiledRoute> matchesRoute = routeRegistry.find(request.getRequestURI());
         String outcome = "TARGET_ERROR";
         int statuscode = HttpStatus.INTERNAL_SERVER_ERROR.value();
-
+        boolean rateLimited = false;
+        HttpHeaders policyHeaders = new HttpHeaders();
+        Optional<CompiledRoute> matchesRoute = routeRegistry.find(request.getRequestURI());
         if(!matchesRoute.isPresent()){
             outcome = "ROUTE_NOT_FOUND";
             statuscode = HttpStatus.NOT_FOUND.value();
@@ -57,8 +64,22 @@ public class GatewayService {
         }
 
         //checking rate limmiting
+        RateLimitResult rateLimit = rateLimitService.check(route, request.getRemoteAddr());
 
+        policyHeaders = rateLimitHeaders(rateLimit);
 
+        if(!rateLimit.isAllowed()) {
+            rateLimited = true;
+            outcome = "RATE_LIMITED";
+            statuscode = HttpStatus.TOO_MANY_REQUESTS.value();
+
+            policyHeaders.set(HttpHeaders.RETRY_AFTER,
+                    String.valueOf(rateLimit.getRetryAfterSeconds()));
+            return error(HttpStatus.TOO_MANY_REQUESTS,"Rate Limit Exceeded ",
+                    coorelationId,policyHeaders);
+        }
+        // Idempotency check
+        return null;
     }
 
     String getCorrelationId(HttpServletRequest request){
@@ -85,5 +106,13 @@ public class GatewayService {
         return ResponseEntity.status(status).headers(headers)
                 .body(objectMapper.writeValueAsString(response).getBytes(StandardCharsets.UTF_8));
 
+    }
+    private HttpHeaders rateLimitHeaders(RateLimitResult result) {
+        HttpHeaders headers = new HttpHeaders();
+        if(result.getLimit() > 0) {
+            headers.set("X-Ratelimit-Limit", String.valueOf(result.getLimit()));
+            headers.set("X-Ratelimit-Remaining", String.valueOf(result.getRemaining()));
+        }
+            return headers;
     }
 }
